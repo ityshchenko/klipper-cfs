@@ -3,6 +3,7 @@
 This module intentionally implements only RS485 protocol operations for CFS.
 It does not invoke nozzle-cleaning, movement, or heater actions.
 """
+from __future__ import annotations
 
 import binascii
 import logging

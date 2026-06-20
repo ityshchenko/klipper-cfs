@@ -1,66 +1,171 @@
-"""
-Tests for the CFS protocol message structures.
-
-This module contains tests for the DataPackage class from the creality_cfs module,
-verifying that it correctly parses and reconstructs binary messages.
-"""
+import sys
+import types
 
 import pytest
-from extras.creality_cfs import DataPackage
+
+serial_stub = types.ModuleType('serial')
+serial_stub.Serial = object
+serial_stub.SerialException = Exception
+sys.modules.setdefault('serial', serial_stub)
+
+from extras.creality_cfs import CfsConnection, _crc8, _to_hex
 
 
-@pytest.mark.parametrize(
-    'msg', [
-        # samples captured with interceptty during multi-color printing
-        pytest.param(b'\xf7\x01\x03\x00\xa3\xdd', id='loader-slave-1'),
-        pytest.param(b'\xf7\x02\x03\x00\xa3\xdd', id='loader-slave-2'),
-        pytest.param(b'\xf7\x03\x03\x00\xa3\xdd', id='loader-slave-3'),
-        pytest.param(b'\xf7\x04\x03\x00\xa3\xdd', id='loader-slave-4'),
-        pytest.param(b'\xf7\x01\x05\xff\x04\x00\x01\x90', id='set-box-mode-slave-1'),
-        pytest.param(b'\xf7\x01\x03\xff\x14\x06', id='get-version-sn-slave-1'),
-        pytest.param(b'\xf7\x01\x05\xff\x0d\x0f\x01\x69', id='set-pre-loading-slave-1'),
-        pytest.param(b'\xf7\x01\x03\xff\x0a\x5c', id='get-box-state-slave-1'),
-        pytest.param(b'\xf7\xfe\x05\x00\xa1\xfe\xfe\xf8', id='unknown-all-boxes'),
-        pytest.param(b'\xf7\x01\x03\x00\xa2\xda', id='unknown-slave-1'),
-        # b'\xf7\x01\x03\xff\xa2\xda',  # invalid CRC8 - commented out for now
-    ]
-)
-def test_transmitted_messages(msg):
-    """
-    Test that DataPackage correctly parses and reconstructs messages transmitted to the CFS.
+class DummyReactor:
+    def __init__(self):
+        self.now = 0.0
 
-    This test verifies that when a binary message is parsed into a DataPackage object,
-    the object's message_block property matches the original binary message.
-
-    Args:
-        msg: Binary message to test
-    """
-    item = DataPackage.loads(msg)
-    assert item.message_block == msg
+    def monotonic(self):
+        return self.now
 
 
-@pytest.mark.parametrize(
-    'msg', [
-        pytest.param(b'\xf7\x01\x11\x00\xa3\x01\x00\x5c\x51\x30\x03\x14\x91\xb0\x15\x4c\x30\x39\x33\x48'),
-        pytest.param(b'\xf7\x01\x07\x00\x0a\x1c\x14\x00\x00\x48'),
-        pytest.param(b'\xf7\x01\x03\x00\x04\xa1'),
-        pytest.param(
-            b'\xf7\x01\x19\x00\x14\x31\x31\x30\x31\x30\x30\x30\x30\x38\x34\x33\x32\x31\x35\x42\x36\x32\x35\x41\x48\x53'
-            b'\x43\x84',
-        ),
-        pytest.param(b'\xf7\x01\x03\x00\x0d\x9e'),
-        pytest.param(b'\xf7\x01\x11\x00\xa2\x01\x00\x5c\x51\x30\x03\x14\x91\xb0\x15\x4c\x30\x39\x33\xfd'),
-    ]
-)
-def test_received_messages(msg):
-    """
-    Test that DataPackage correctly parses and reconstructs messages received from the CFS.
+class DummyGcode:
+    def __init__(self):
+        self.commands = {}
 
-    This test verifies that when a binary message is parsed into a DataPackage object,
-    the object's message_block property matches the original binary message.
+    def register_command(self, name, fn, desc=None):
+        self.commands[name] = (fn, desc)
 
-    Args:
-        msg: Binary message to test
-    """
-    item = DataPackage.loads(msg)
-    assert item.message_block == msg
+
+class DummyPrinter:
+    def __init__(self):
+        self.reactor = DummyReactor()
+        self.gcode = DummyGcode()
+
+    def get_reactor(self):
+        return self.reactor
+
+    def lookup_object(self, name):
+        assert name == 'gcode'
+        return self.gcode
+
+    def register_event_handler(self, _event, _handler):
+        pass
+
+    def command_error(self, msg):
+        return RuntimeError(msg)
+
+    def config_error(self, msg):
+        return ValueError(msg)
+
+
+class DummyConfig:
+    def __init__(self):
+        self.printer = DummyPrinter()
+
+    def get_printer(self):
+        return self.printer
+
+    def get_name(self):
+        return 'cfs test'
+
+    def get(self, key, default=None):
+        values = {'serial': '/dev/null'}
+        return values.get(key, default)
+
+    def getint(self, _key, default=None, minval=None, maxval=None):
+        del minval, maxval
+        return default
+
+    def getfloat(self, _key, default=None, above=None):
+        del above
+        return default
+
+    def getboolean(self, _key, default=None):
+        return default
+
+    def error(self, msg):
+        return RuntimeError(msg)
+
+
+class DummyCmd:
+    def __init__(self, values=None):
+        self.values = values or {}
+        self.messages = []
+
+    def get(self, name, default=None):
+        return self.values.get(name, default)
+
+    def get_int(self, name, default=None, minval=None, maxval=None):
+        val = self.values.get(name, default)
+        if val is None:
+            raise ValueError('missing %s' % (name,))
+        if minval is not None and val < minval:
+            raise ValueError('below min')
+        if maxval is not None and val > maxval:
+            raise ValueError('above max')
+        return val
+
+    def respond_info(self, msg):
+        self.messages.append(msg)
+
+    def error(self, msg):
+        return RuntimeError(msg)
+
+
+@pytest.fixture
+def conn():
+    return CfsConnection(DummyConfig())
+
+
+def test_to_hex_and_crc8_basics():
+    assert _to_hex(b'\x00\xAF') == '00AF'
+    assert _crc8(bytes([0x03, 0xFF, 0x0A])) == 0x5C
+
+
+def test_build_and_parse_frame_roundtrip(conn):
+    frame = conn._build_frame(addr=0x01, status=0xFF, fn=0x04, data=b'\x00\x01')
+    parsed = conn._parse_frame(frame)
+    assert parsed['addr'] == 0x01
+    assert parsed['status'] == 0xFF
+    assert parsed['fn'] == 0x04
+    assert parsed['data'] == b'\x00\x01'
+    assert parsed['raw'] == frame
+
+
+def test_parse_frame_rejects_bad_header(conn):
+    with pytest.raises(RuntimeError, match='invalid cfs frame'):
+        conn._parse_frame(b'\x00\x01\x03\x00\xA3\xDD')
+
+
+def test_parse_frame_rejects_bad_crc(conn):
+    good = conn._build_frame(addr=0x01, status=0x00, fn=0xA3)
+    bad = good[:-1] + bytes([good[-1] ^ 0xFF])
+    with pytest.raises(RuntimeError, match='crc mismatch'):
+        conn._parse_frame(bad)
+
+
+def test_query_frame_timeout_raises(conn):
+    class SerialStub:
+        def write(self, _data):
+            pass
+
+        def flush(self):
+            pass
+
+    conn._serial = SerialStub()
+    conn._wait_for_rx = lambda _deadline: None
+    with pytest.raises(RuntimeError, match='cfs response timeout'):
+        conn._query_frame(0x01, 0x04, b'\x00', wait=True)
+
+
+def test_cmd_rfid_write_rejects_empty_data(conn):
+    conn._connected = True
+    conn._serial = object()
+    gcmd = DummyCmd({'SPOOL': 1, 'DATA_HEX': ''})
+    with pytest.raises(RuntimeError, match='DATA_HEX must not be empty'):
+        conn.cmd_CFS_RFID_WRITE(gcmd)
+
+
+def test_cmd_get_active_spool_formats_response(conn):
+    conn._connected = True
+    conn._serial = object()
+    conn._query_frame = lambda _addr, _fn, _data, wait=True: {
+        'tx': b'\xF7',
+        'rx': b'\xF7\x01\x04\x00\x0A\x02\xA9',
+        'parsed': {'data': b'\x02'},
+    }
+    gcmd = DummyCmd({'ADDR': 1})
+    conn.cmd_CFS_GET_ACTIVE_SPOOL(gcmd)
+    assert gcmd.messages
+    assert 'active_spool=3' in gcmd.messages[0]

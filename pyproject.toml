@@ -3,8 +3,9 @@ name = "klipper-cfs"
 version = "0.1.0"
 description = "A Python module for controlling the Creality File System (CFS) from Klipper firmware"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {file = "LICENSE"}
+requires-python = ">=3.9"
+license = "GPL-3.0-or-later"
+license-files = ["LICEN[CS]E*"]
 authors = [
     {name = "Klipper-CFS Contributors"}
 ]
@@ -12,7 +13,6 @@ keywords = ["klipper", "3d-printing", "creality", "cfs", "filament"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Libraries",
     "Topic :: System :: Hardware",
@@ -36,6 +36,12 @@ dev = [
 [build-system]
 requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["creality_cfs"]
+
+[tool.setuptools.package-dir]
+"" = "extras"
 
 [tool.pytest.ini_options]
 pythonpath = [
